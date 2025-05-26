@@ -62,7 +62,7 @@ client.on("message", async (msg) => {
 
   // Kirim ke Webhook n8n
   try {
-    await axios.post("http://localhost:5678/webhook/whatsapp-masuk", {
+    await axios.post("http://localhost:5678/webhook-test/whatsapp-masuk", {
       from: msg.from,
       name: msg._data?.notifyName || "",
       message: msg.body,
