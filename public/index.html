@@ -51,7 +51,7 @@
             class="border rounded p-3 bg-white"
             style="height: 300px; overflow-y: auto"
         >
-            <!-- Pesan akan tampil di sini -->
+            <div class="text-center text-muted">Menunggu pesan masuk...</div>
         </div>
         </div>
 
@@ -99,7 +99,7 @@
             const from = msg.from.split("@")[0];
             const messageEl = document.createElement("div");
             messageEl.classList.add("mb-2", "p-2", "rounded");
-            messageEl.style.backgroundColor = "#f8f9fa"; // abu-abu terang
+            messageEl.style.backgroundColor = "#f8f9fa";
 
             messageEl.innerHTML = `<b>${from}:</b> ${msg.body}`;
             chatBox.appendChild(messageEl);
@@ -126,7 +126,7 @@
 
             socket.emit("send-message", { number, message });
 
-            // Tampilkan pesan sendiri secara langsung (opsional)
+            // Tampilkan pesan sendiri secara langsung
             const tempEl = document.createElement("div");
             tempEl.classList.add("mb-2", "p-2", "rounded", "text-end");
             tempEl.style.backgroundColor = "#d0ebff";

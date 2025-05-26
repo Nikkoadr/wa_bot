@@ -14,7 +14,10 @@ app.use(express.json());
 
 const client = new Client({
   authStrategy: new LocalAuth(),
-  puppeteer: { headless: true },
+  puppeteer: {
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  },
 });
 
 let isConnected = false;
@@ -77,59 +80,57 @@ io.on("connection", (socket) => {
   // Kirim status koneksi WA saat socket client baru connect
   socket.emit("whatsapp-connection", isConnected);
 
-socket.on("send-message", async ({ number, message }) => {
-  try {
-    const cleanNumber = number.replace(/\D/g, "");
+  socket.on("send-message", async ({ number, message }) => {
+    try {
+      const cleanNumber = number.replace(/\D/g, "");
 
-    if (!/^628[1-9][0-9]{7,11}$/.test(cleanNumber)) {
+      if (!/^628[1-9][0-9]{7,11}$/.test(cleanNumber)) {
+        socket.emit("alert", {
+          icon: "warning",
+          title: "Nomor tidak valid",
+          text: "Gunakan format 628xxxxxxxxxx (hanya angka).",
+        });
+        return;
+      }
+
+      const chatId = cleanNumber + "@c.us";
+
+      const isRegistered = await client.isRegisteredUser(chatId);
+
+      if (!isRegistered) {
+        socket.emit("alert", {
+          icon: "error",
+          title: "Nomor tidak terdaftar",
+          text: `Nomor ${cleanNumber} tidak terdaftar di WhatsApp.`,
+        });
+        return;
+      }
+
+      await client.sendMessage(chatId, message);
+
       socket.emit("alert", {
-        icon: "warning",
-        title: "Nomor tidak valid",
-        text: "Gunakan format 628xxxxxxxxxx (hanya angka).",
+        icon: "success",
+        title: "Pesan terkirim",
+        text: `Pesan berhasil dikirim ke ${cleanNumber}`,
       });
-      return;
+    } catch (err) {
+      console.error("❌ Gagal kirim pesan:", err);
+
+      if (err.message && err.message.includes("wid error")) {
+        socket.emit("alert", {
+          icon: "error",
+          title: "Nomor tidak valid",
+          text: "Nomor tidak dikenali oleh WhatsApp (wid error).",
+        });
+      } else {
+        socket.emit("alert", {
+          icon: "error",
+          title: "Kesalahan",
+          text: "Gagal mengirim pesan. Periksa koneksi atau format nomor.",
+        });
+      }
     }
-
-    const chatId = cleanNumber + "@c.us";
-
-    const isRegistered = await client.isRegisteredUser(chatId);
-
-    if (!isRegistered) {
-      socket.emit("alert", {
-        icon: "error",
-        title: "Nomor tidak terdaftar",
-        text: `Nomor ${cleanNumber} tidak terdaftar di WhatsApp.`,
-      });
-      return;
-    }
-
-    await client.sendMessage(chatId, message);
-
-    socket.emit("alert", {
-      icon: "success",
-      title: "Pesan terkirim",
-      text: `Pesan berhasil dikirim ke ${cleanNumber}`,
-    });
-  } catch (err) {
-    console.error("❌ Gagal kirim pesan:", err);
-
-    if (err.message && err.message.includes("wid error")) {
-      socket.emit("alert", {
-        icon: "error",
-        title: "Nomor tidak valid",
-        text: "Nomor tidak dikenali oleh WhatsApp (wid error).",
-      });
-    } else {
-      socket.emit("alert", {
-        icon: "error",
-        title: "Kesalahan",
-        text: "Gagal mengirim pesan. Periksa koneksi atau format nomor.",
-      });
-    }
-  }
-});
-
-  
+  });
 });
 
 client.initialize();
