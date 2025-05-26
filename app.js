@@ -62,11 +62,14 @@ client.on("message", async (msg) => {
 
   // Kirim ke Webhook n8n
   try {
-    await axios.post("http://127.0.0.1:5678/webhook/whatsapp-masuk", {
-      from: msg.from,
-      name: msg._data?.notifyName || "",
-      message: msg.body,
-    });
+    await axios.post(
+      "https://n8n.smkmuhkandanghar.sch.id/webhook/whatsapp-masuk",
+      {
+        from: msg.from,
+        name: msg._data?.notifyName || "",
+        message: msg.body,
+      }
+    );
     console.log("[WEBHOOK] Terkirim ke n8n");
   } catch (error) {
     console.error("❌ Gagal kirim ke webhook n8n:", error.message);
