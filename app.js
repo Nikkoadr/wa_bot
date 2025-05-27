@@ -137,6 +137,35 @@ io.on("connection", (socket) => {
   });
 });
 
+app.post("/send-message", async (req, res) => {
+  const { to, message } = req.body;
+
+  if (!to || !message) {
+    return res
+      .status(400)
+      .json({ status: false, message: "Data tidak lengkap" });
+  }
+
+  try {
+    const isRegistered = await client.isRegisteredUser(to);
+    if (!isRegistered) {
+      return res
+        .status(422)
+        .json({ status: false, message: "Nomor tidak terdaftar di WhatsApp" });
+    }
+
+    await client.sendMessage(to, message);
+    res.json({ status: true, message: "Pesan berhasil dikirim" });
+  } catch (error) {
+    console.error("❌ Gagal kirim pesan dari HTTP:", error.message);
+    res.status(500).json({
+      status: false,
+      message: "Gagal kirim pesan",
+      error: error.message,
+    });
+  }
+});
+
 // Halaman utama
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
