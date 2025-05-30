@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const http = require("http");
@@ -13,6 +14,16 @@ const io = socketIO(server);
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 
+// Cek env wajib
+if (!process.env.WEBHOOK_URL || !process.env.WEBHOOK_TOKEN) {
+  console.warn("⚠️ WEBHOOK_URL dan WEBHOOK_TOKEN belum disetel di .env!");
+}
+
+// Format nomor menjadi ID WhatsApp
+const formatNumber = (number) => {
+  return number.includes("@c.us") ? number : `${number}@c.us`;
+};
+
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
@@ -23,12 +34,12 @@ const client = new Client({
 
 let isConnected = false;
 
-// Generate QR Code
+// QR Code generation
 client.on("qr", (qr) => {
   console.log("[QR] Silakan scan QR");
   qrcode.toDataURL(qr, (err, url) => {
     if (err) {
-      console.error("Gagal generate QR code:", err);
+      console.error("❌ Gagal generate QR code:", err);
       return;
     }
     io.emit("qr", url);
@@ -56,32 +67,7 @@ client.on("ready", () => {
   });
 });
 
-client.on("message", async (msg) => {
-  console.log(`[PESAN MASUK] ${msg.from}: ${msg.body}`);
-  io.emit("message", { from: msg.from, body: msg.body });
-
-  // Kirim ke Webhook n8n
-  try {
-    await axios.post(
-      "https://n8n.smkmuhkandanghaur.sch.id/webhook/whatsapp-masuk",
-      {
-        from: msg.from,
-        name: msg._data?.notifyName || "",
-        message: msg.body,
-      }
-    );
-    console.log("[WEBHOOK] Terkirim ke n8n");
-  } catch (error) {
-    console.error("❌ Gagal kirim ke webhook n8n:", error.message);
-  }
-
-  // Respon otomatis sederhana
-  if (msg.body.toLowerCase() === "halo") {
-    msg.reply("Hai juga! Ada yang bisa saya bantu?");
-  }
-});
-
-client.on("disconnected", (reason) => {
+client.on("disconnected", async (reason) => {
   console.log("[DISCONNECTED]", reason);
   isConnected = false;
   io.emit("whatsapp-connection", false);
@@ -89,54 +75,73 @@ client.on("disconnected", (reason) => {
     type: "danger",
     text: "Terputus, silakan refresh dan scan ulang QR.",
   });
+
+  // Destroy and re-initialize to get new QR
+  await client.destroy();
+  client.initialize();
 });
 
-// Endpoint kirim pesan manual
+// Handle pesan masuk ke webhook
+
+client.on("message", async (msg) => {
+  // Abaikan jika pesan kosong
+  if (!msg.body || msg.body.trim() === "") return;
+
+  try {
+    // Kirim data ke n8n webhook
+    const response = await axios.post(
+      process.env.WEBHOOK_URL,
+      {
+        from: msg.from,
+        name: msg._data?.notifyName || "",
+        message: msg.body,
+      },
+      {
+        headers: {
+          "x-api-token": process.env.WEBHOOK_TOKEN,
+        },
+      }
+    );
+
+    console.log("[WEBHOOK] Pesan terkirim ke n8n");
+
+    // Jika n8n membalas dengan data.message, kirim kembali ke user WA
+    if (response.data && typeof response.data.message === "string") {
+      await client.sendMessage(msg.from, response.data.message);
+      console.log("[BOT] Balasan dikirim ke:", msg.from);
+    } else {
+      console.log("[BOT] Tidak ada balasan dari n8n atau format tidak valid");
+    }
+  } catch (error) {
+    console.error("❌ Gagal kirim ke webhook n8n:", error.message);
+  }
+});
+
+// WebSocket koneksi
 io.on("connection", (socket) => {
   console.log("🔌 Socket client connected");
+
+  // Kirim status koneksi awal
   socket.emit("whatsapp-connection", isConnected);
 
-  socket.on("send-message", async ({ number, message }) => {
+  // Logout WhatsApp dari socket
+  socket.on("logout", async () => {
     try {
-      const cleanNumber = number.replace(/\D/g, "");
-      if (!/^628[1-9][0-9]{7,11}$/.test(cleanNumber)) {
-        socket.emit("alert", {
-          icon: "warning",
-          title: "Nomor tidak valid",
-          text: "Gunakan format 628xxxxxxxxxx (hanya angka).",
-        });
-        return;
-      }
+      await client.logout();
+      await client.destroy();
+      isConnected = false;
+      socket.emit("status", { type: "info", text: "Berhasil logout" });
 
-      const chatId = cleanNumber + "@c.us";
-      const isRegistered = await client.isRegisteredUser(chatId);
-
-      if (!isRegistered) {
-        socket.emit("alert", {
-          icon: "error",
-          title: "Nomor tidak terdaftar",
-          text: `Nomor ${cleanNumber} tidak terdaftar di WhatsApp.`,
-        });
-        return;
-      }
-
-      await client.sendMessage(chatId, message);
-      socket.emit("alert", {
-        icon: "success",
-        title: "Pesan terkirim",
-        text: `Pesan berhasil dikirim ke ${cleanNumber}`,
-      });
+      // Re-initiate WA client for new QR
+      client.initialize();
     } catch (err) {
-      console.error("❌ Gagal kirim pesan:", err.message);
-      socket.emit("alert", {
-        icon: "error",
-        title: "Kesalahan",
-        text: "Gagal mengirim pesan. Periksa koneksi atau format nomor.",
-      });
+      console.error("❌ Gagal logout:", err.message);
+      socket.emit("status", { type: "danger", text: "Gagal logout" });
     }
   });
 });
 
+// API: Kirim pesan manual
 app.post("/send-message", async (req, res) => {
   const { to, message } = req.body;
 
@@ -146,15 +151,19 @@ app.post("/send-message", async (req, res) => {
       .json({ status: false, message: "Data tidak lengkap" });
   }
 
+  const toNumber = formatNumber(to);
+
   try {
-    const isRegistered = await client.isRegisteredUser(to);
+    const isRegistered = await client
+      .isRegisteredUser(toNumber)
+      .catch(() => false);
     if (!isRegistered) {
       return res
         .status(422)
         .json({ status: false, message: "Nomor tidak terdaftar di WhatsApp" });
     }
 
-    await client.sendMessage(to, message);
+    await client.sendMessage(toNumber, message);
     res.json({ status: true, message: "Pesan berhasil dikirim" });
   } catch (error) {
     console.error("❌ Gagal kirim pesan dari HTTP:", error.message);
@@ -166,15 +175,25 @@ app.post("/send-message", async (req, res) => {
   }
 });
 
+// API: Status bot
+app.get("/status", (req, res) => {
+  res.json({
+    status: isConnected ? "connected" : "disconnected",
+    uptime: process.uptime(),
+    version: "1.0.0",
+  });
+});
+
 // Halaman utama
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server berjalan di http://localhost:${PORT}`);
 });
 
-// Inisialisasi WA client
+// Inisialisasi WhatsApp client
 client.initialize();
