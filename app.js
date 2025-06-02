@@ -21,8 +21,15 @@ if (!process.env.WEBHOOK_URL || !process.env.WEBHOOK_TOKEN) {
 
 // Format nomor menjadi ID WhatsApp
 const formatNumber = (number) => {
+  number = number.replace(/\D/g, "");
+
+  if (number.startsWith("0")) {
+    number = "62" + number.slice(1);
+  }
+
   return number.includes("@c.us") ? number : `${number}@c.us`;
 };
+
 
 const client = new Client({
   authStrategy: new LocalAuth(),
