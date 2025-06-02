@@ -1,4 +1,4 @@
 node_modules/
 .env
-data/.wwebjs_cache/
-data/.wwebjs_auth/
+.wwebjs_cache/
+.wwebjs_auth/

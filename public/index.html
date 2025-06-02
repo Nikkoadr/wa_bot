@@ -42,7 +42,7 @@
         gap: 40px;
       }
 
-      .instructions {
+      .form-section {
         flex: 1;
       }
 
@@ -63,8 +63,8 @@
         margin-top: 10px;
       }
 
-      .keep-signed-in {
-        margin-top: 10px;
+      #btn-logout {
+        margin-top: 15px;
       }
 
       @media (max-width: 768px) {
@@ -73,13 +73,15 @@
           text-align: center;
         }
 
-        .instructions,
+        .form-section,
         .qr-section {
           width: 100%;
         }
       }
     </style>
   </head>
+  <!-- ... bagian head dan style sama ... -->
+
   <body>
     <div class="header">
       <img
@@ -90,16 +92,36 @@
     </div>
 
     <div class="main-panel">
-      <div class="instructions">
-        <h5>Untuk menggunakan WhatsApp di komputer:</h5>
-        <ol class="mt-3">
-          <li>Buka WhatsApp di ponsel Anda</li>
-          <li>
-            Ketuk <strong>Menu</strong> ☰ atau <strong>Setelan</strong> ⚙️ lalu
-            pilih <strong>Perangkat Tertaut</strong>
-          </li>
-          <li>Arahkan ponsel Anda ke layar ini untuk memindai kode QR</li>
-        </ol>
+      <div class="form-section">
+        <h5>Konfigurasi Webhook n8n</h5>
+        <form id="webhook-form" class="mt-3">
+          <div class="mb-3">
+            <label for="webhook-url" class="form-label">Webhook URL</label>
+            <input
+              type="url"
+              class="form-control"
+              id="webhook-url"
+              name="webhook_url"
+              placeholder="https://example.com/webhook"
+              required
+            />
+          </div>
+          <div class="mb-3">
+            <label for="webhook-token" class="form-label">Webhook Token</label>
+            <input
+              type="text"
+              class="form-control"
+              id="webhook-token"
+              name="webhook_token"
+              placeholder="Token rahasia"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-success">
+            Simpan Konfigurasi
+          </button>
+        </form>
+        <div id="form-message" class="mt-3"></div>
       </div>
 
       <div class="qr-section">
@@ -111,22 +133,39 @@
         <div id="wa-status" class="footer mt-3 text-center">
           Memeriksa status WhatsApp...
         </div>
+
+        <!-- Tombol Logout di sini, awalnya hidden -->
+        <button
+          id="btn-logout"
+          class="btn btn-danger"
+          style="display: none"
+          title="Logout WhatsApp"
+        >
+          🔒 Logout WhatsApp
+        </button>
       </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script>
       const socket = io();
       const qrcodeContainer = document.getElementById("qrcode");
       const waStatus = document.getElementById("wa-status");
+      const btnLogout = document.getElementById("btn-logout");
+      const webhookForm = document.getElementById("webhook-form");
+      const formMessage = document.getElementById("form-message");
 
-      function updateWAStatus(connected) {
-        waStatus.innerHTML = connected
+      function updateWAStatus(isConnected) {
+        waStatus.textContent = isConnected
           ? "✅ WhatsApp Terhubung"
           : "🔌 WhatsApp Belum Terhubung";
 
-        if (connected) {
+        if (isConnected) {
           qrcodeContainer.innerHTML =
             '<p class="text-success">WhatsApp berhasil terhubung!</p>';
+          btnLogout.style.display = "inline-block";
+        } else {
+          btnLogout.style.display = "none";
         }
       }
 
@@ -146,14 +185,89 @@
         qrcodeContainer.innerHTML = `<img src="${qrDataUrl}" alt="QR Code WhatsApp" />`;
       });
 
-      socket.on("whatsapp-connection", (connected) => {
-        updateWAStatus(connected);
+      socket.on("whatsapp-connection", updateWAStatus);
+
+      btnLogout.addEventListener("click", () => {
+        Swal.fire({
+          title: "Logout WhatsApp?",
+          text: "Anda harus scan ulang QR untuk login kembali.",
+          icon: "warning",
+          showCancelButton: true,
+          confirmButtonText: "Logout",
+          cancelButtonText: "Batal",
+        }).then((result) => {
+          if (result.isConfirmed) {
+            socket.emit("logout");
+          }
+        });
       });
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script>
-      socket.on("alert", ({ icon, title, text }) => {
-        Swal.fire({ icon, title, text });
+
+      socket.on("status", ({ type, text }) => {
+        Swal.fire({
+          icon: type,
+          title: type === "danger" ? "Error" : "Info",
+          text,
+          timer: 2500,
+          showConfirmButton: false,
+          timerProgressBar: true,
+        });
+      });
+
+      async function loadConfig() {
+        try {
+          const res = await fetch("/api/config");
+          if (!res.ok) throw new Error("Tidak ada konfigurasi");
+          const data = await res.json();
+
+          if (data.webhook_url)
+            webhookForm.webhook_url.value = data.webhook_url;
+          if (data.webhook_token)
+            webhookForm.webhook_token.value = data.webhook_token;
+
+          formMessage.textContent =
+            "Konfigurasi saat ini sudah terisi di form.";
+          formMessage.style.color = "green";
+        } catch (error) {
+          console.log("Load config:", error.message);
+        }
+      }
+
+      loadConfig();
+
+      webhookForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        formMessage.textContent = "";
+        const webhookUrl = webhookForm.webhook_url.value.trim();
+        const webhookToken = webhookForm.webhook_token.value.trim();
+
+        if (!webhookUrl || !webhookToken) {
+          formMessage.textContent = "Harap isi semua kolom.";
+          formMessage.style.color = "red";
+          return;
+        }
+
+        try {
+          const res = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              webhook_url: webhookUrl,
+              webhook_token: webhookToken,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            formMessage.textContent = "Konfigurasi berhasil disimpan.";
+            formMessage.style.color = "green";
+          } else {
+            formMessage.textContent =
+              data.message || "Gagal menyimpan konfigurasi.";
+            formMessage.style.color = "red";
+          }
+        } catch (error) {
+          formMessage.textContent = "Terjadi kesalahan: " + error.message;
+          formMessage.style.color = "red";
+        }
       });
     </script>
   </body>
