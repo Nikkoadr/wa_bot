@@ -10,7 +10,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIO(server);
 
-process.chdir(path.join(__dirname, "data"));
+//process.chdir(path.join(__dirname, "data"));
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -26,7 +26,9 @@ const formatNumber = (number) => {
 };
 
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: "./data",
+  }),
   puppeteer: {
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
