@@ -1,25 +1,51 @@
 const fs = require("fs");
 const express = require("express");
+const session = require("express-session");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const http = require("http");
 const socketIO = require("socket.io");
 const path = require("path");
 const qrcode = require("qrcode");
 const axios = require("axios");
-
+const cors = require("cors");
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server);
 const sessionPath = path.join(__dirname, "data");
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "whatsapp_bot_secret",
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }, // true jika menggunakan HTTPS
+  })
+);
+app.use(
+  cors({
+    origin: "*",
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const dataDir = path.join(__dirname, "data");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+
+// Middleware untuk autentikasi token
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token || token !== process.env.AUTH_TOKEN) {
+    return res.status(401).json({ status: false, message: "Unauthorized" });
+  }
+  next();
 }
 
 // Fungsi baca config dari file JSON
@@ -74,7 +100,7 @@ const client = new Client({
 let isConnected = false;
 let isReinitializing = false;
 
-// Event: QR code diterima, kirim ke client via socket dan log
+// Event: QR code diterima
 client.on("qr", (qr) => {
   console.log("🔶 QR Code diterima, silakan scan untuk login WhatsApp...");
   qrcode.toDataURL(qr, (err, url) => {
@@ -83,14 +109,10 @@ client.on("qr", (qr) => {
       return;
     }
     io.emit("qr", url);
-    io.emit("status", {
-      type: "warning",
-      text: "📲 Silakan scan QR Code untuk melanjutkan login.",
-    });
   });
 });
 
-// Event: Berhasil autentikasi
+// Event: Autentikasi berhasil
 client.on("authenticated", () => {
   console.log("✅ Autentikasi WhatsApp berhasil, sedang memuat...");
   io.emit("status", {
@@ -99,7 +121,7 @@ client.on("authenticated", () => {
   });
 });
 
-// Event: WhatsApp siap pakai
+// Event: WhatsApp siap
 client.on("ready", () => {
   console.log("🚀 WhatsApp client siap digunakan!");
   isConnected = true;
@@ -112,7 +134,7 @@ client.on("ready", () => {
   });
 });
 
-// Event: Terputus / disconnect
+// Event: WhatsApp disconnect
 client.on("disconnected", async (reason) => {
   console.warn(`⚠️ WhatsApp terputus: ${reason}`);
   isConnected = false;
@@ -131,7 +153,6 @@ client.on("disconnected", async (reason) => {
       await client.destroy();
     }
 
-    // ❗ Hapus sesi lama jika client dikeluarkan dari HP
     if (reason === "NAVIGATION") {
       fs.rmSync(sessionPath, { recursive: true, force: true });
       console.log("🗑️ Sesi lama dihapus karena logout dari HP.");
@@ -148,7 +169,7 @@ client.on("disconnected", async (reason) => {
   }
 });
 
-// Event: Pesan masuk diteruskan ke webhook n8n (ambil dari config.json)
+// Event: Pesan masuk
 client.on("message", async (msg) => {
   if (!msg.body || msg.body.trim() === "") return;
 
@@ -188,7 +209,7 @@ client.on("message", async (msg) => {
   }
 });
 
-// WebSocket: ketika client socket connect
+// Socket connection
 io.on("connection", (socket) => {
   console.log("🔌 Socket client tersambung.");
 
@@ -216,8 +237,17 @@ io.on("connection", (socket) => {
   });
 });
 
-// API: Kirim pesan manual
-app.post("/send-message", async (req, res) => {
+// Middleware cek login
+function isAuthenticated(req, res, next) {
+  if (req.session && req.session.loggedIn) {
+    return next();
+  } else {
+    res.redirect("/login");
+  }
+}
+
+// API: Kirim pesan
+app.post("/send-message", authenticateToken, async (req, res) => {
   const { to, message } = req.body;
 
   if (!to || !message) {
@@ -253,7 +283,7 @@ app.post("/send-message", async (req, res) => {
 });
 
 // API: Status bot
-app.get("/status", (req, res) => {
+app.get("/status", authenticateToken, (req, res) => {
   res.json({
     status: isConnected ? "connected" : "disconnected",
     uptime: process.uptime(),
@@ -261,8 +291,8 @@ app.get("/status", (req, res) => {
   });
 });
 
-// API: GET config webhook URL dan token
-app.get("/api/config", (req, res) => {
+// API: GET config webhook
+app.get("/api/config", authenticateToken, (req, res) => {
   const config = readConfig();
 
   if (!config.webhook_url || !config.webhook_token) {
@@ -281,8 +311,8 @@ app.get("/api/config", (req, res) => {
   });
 });
 
-// API: POST update config webhook URL dan token
-app.post("/api/config", (req, res) => {
+// API: POST update config webhook
+app.post("/api/config", authenticateToken, (req, res) => {
   const { webhook_url, webhook_token } = req.body;
   if (!webhook_url || !webhook_token) {
     return res
@@ -302,8 +332,35 @@ app.post("/api/config", (req, res) => {
   res.json({ status: true, message: "Config berhasil disimpan." });
 });
 
-// Halaman utama
-app.get("/", (req, res) => {
+// GET Login Page
+app.get("/login", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+// POST Login
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  const valid =
+    username === process.env.LOGIN_USERNAME &&
+    password === process.env.LOGIN_PASSWORD;
+
+  if (valid) {
+    req.session.loggedIn = true;
+    res.redirect("/");
+  } else {
+    res.status(401).send("Login gagal. Username atau password salah.");
+  }
+});
+
+// Logout
+app.get("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.redirect("/login");
+  });
+});
+
+// Halaman utama (dilindungi)
+app.get("/", isAuthenticated, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
